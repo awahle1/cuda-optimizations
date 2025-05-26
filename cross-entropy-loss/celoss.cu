@@ -2,8 +2,8 @@
 #include <iostream>
 #include <math.h>
 
-#define C 8
-#define N 2
+#define C 32
+#define N 32
 
 float ce_loss_sequential(float * L, int* Y){
     float total_log_likelyhood = 0;
@@ -28,7 +28,7 @@ float randomFloat(float min, float max) {
 void fill_L(float * L){
     for (int i=0; i<N; ++i){
         for (int j=0; j<C; ++j){
-            L[i*C + j] = randomFloat(-5, 5);
+            L[i*C + j] = randomFloat(-1, 1);
         }
     }
 }
@@ -39,18 +39,49 @@ void fill_Y(int* Y){
     }
 }
 
+__global__
+void naiveCrossEntropy(float * L, int* Y, float * loss){
+    int i = threadIdx.x;
+    
+    //Log of Softmax
+    float sum_exp = 0;
+    for (int j=0; j<C; ++j){
+        sum_exp += expf(L[i*C + j]);
+    }
+    int class_ind = Y[i];
+    float log_likelyhood = logf(expf(L[i*C + class_ind])/sum_exp);
+
+    atomicAdd(loss, -log_likelyhood/N);
+
+}
+
 int main() {
-    // float * h_L = (float*)malloc(C*N*sizeof(float));
-    // fill_h(h_L);
-    float h_L[] = {-0.8306562304496765, 1.6165248155593872, -1.1896085739135742, -1.680414080619812, 1.8756650686264038, -0.3747663199901581, 0.8855074048042297, 1.4021867513656616, -0.5551024675369263, 0.040698129683732986, -1.5343101024627686, -0.8756691813468933, -0.44812169671058655, -0.30535200238227844, 0.30701500177383423, -1.8096588850021362};
+    float * h_L = (float*)malloc(C*N*sizeof(float));fill_L(h_L);
+    float * d_L;cudaMalloc(&d_L, C*N*sizeof(float));
+    cudaMemcpy(d_L, h_L, C*N*sizeof(float), cudaMemcpyHostToDevice);
+
+    int * h_Y = (int*)malloc(N*sizeof(int));fill_Y(h_Y);
+    int * d_Y;cudaMalloc(&d_Y, N*sizeof(int));
+    cudaMemcpy(d_Y, d_Y, N*sizeof(int), cudaMemcpyHostToDevice);
+
+    float h_loss = 0; float* h_loss_p = &h_loss; 
+    float* d_loss; 
+    cudaMalloc(&d_loss, sizeof(float));
+    cudaMemcpy(d_loss, h_loss_p, sizeof(float), cudaMemcpyHostToDevice);
+
+    int blockSize = min(32, N);
+    naiveCrossEntropy<<<ceil(N/blockSize), blockSize>>>(d_L, d_Y, d_loss);
+
+    cudaMemcpy(h_loss_p, d_loss, sizeof(float), cudaMemcpyDeviceToHost);
 
 
-    // int * h_Y = (int*)malloc(N*sizeof(int));
-    // fill_Y(h_Y);
-    int h_Y[] = {5, 3};
+    
+    float correct_loss = ce_loss_sequential(h_L, h_Y);
+    printf("Correct Loss: %f, Kernel Loss: %f\n", correct_loss, *h_loss_p);
 
-    float ce_loss = ce_loss_sequential(h_L, h_Y);
-
-    printf("Loss: %f", ce_loss);
-
+    cudaFree(d_loss);
+    cudaFree(d_L);
+    cudaFree(d_Y);
+    free(h_L);
+    free(h_Y);
 }
