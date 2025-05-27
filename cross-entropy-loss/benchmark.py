@@ -6,8 +6,8 @@ C = 32
 N = 1048576
 
 def benchmark():
-    input = torch.randn(N, C)
-    target = torch.randint(C, (N,), dtype=torch.int64)
+    input = torch.randn(N, C, requires_grad=False)
+    target = torch.randint(C, (N,), dtype=torch.int64, requires_grad=False)
     loss = F.cross_entropy(input, target)
 
     # Ensure all CUDA operations are finished

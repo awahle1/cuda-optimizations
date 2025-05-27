@@ -1,9 +1,12 @@
 #include <cuda_runtime.h>
 #include <iostream>
 #include <math.h>
+#include <cuda.h>
 
-#define C 32
+#define C 512
 #define N 1048576
+#define BLOCK_SIZE 32
+#define WARP_SIZE 32
 
 float ce_loss_sequential(float * L, int* Y){
     float total_log_likelyhood = 0;
@@ -40,19 +43,40 @@ void fill_Y(int* Y){
 }
 
 __global__
-void noSoftmaxCrossEntropy(float * L, int* Y, float * loss){
-    int i = threadIdx.x;
-    
-    //Log of Softmax
-    float sum_exp = 0;
-    for (int j=0; j<C; ++j){
-        sum_exp += expf(L[i*C + j]);
+void coalescedAccessCE(float * L, int* Y, float * loss){
+    //One warp/block per row
+    int i = threadIdx.x + blockIdx.x*blockDim.x;
+    if (i < C*N){
+        float thread_sum = 0;
+
+        __shared__ float L_row[C];
+        __shared__ float row_exp_sum;
+
+        if (threadIdx.x == 0){
+            row_exp_sum = 0;
+        }
+
+        for (int p = 0; threadIdx.x + p*WARP_SIZE<C; ++p){
+            L_row[threadIdx.x + p*WARP_SIZE] = L[i+p*WARP_SIZE];
+            thread_sum += expf(L_row[threadIdx.x + p*WARP_SIZE]);
+        }
+
+        __syncthreads();
+
+        //Make a warp reduce later
+        for (int offset = 1; offset <= WARP_SIZE/2; offset *= 2) {
+            thread_sum = thread_sum +  __shfl_down_sync(0xffffffff, thread_sum, offset);
+        }
+        if (threadIdx.x == 0) row_exp_sum = thread_sum;
+
+        if(threadIdx.x == 0){
+            int class_ind = Y[blockIdx.x];
+            float row_loss = (-L_row[class_ind] + log(row_exp_sum))/N;
+            
+            float cur_loss = atomicAdd(loss, row_loss);
+        }
     }
-    int class_ind = Y[i];
-    float negative_log_likelyhood = -L[i*C + class_ind] + log(sum_exp);
-
-    atomicAdd(loss, negative_log_likelyhood/N);
-
+    
 }
 
 int main() {
@@ -69,8 +93,6 @@ int main() {
     cudaMalloc(&d_loss, sizeof(float));
     cudaMemcpy(d_loss, h_loss_p, sizeof(float), cudaMemcpyHostToDevice);
 
-    int blockSize = 32;
-
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
@@ -78,7 +100,7 @@ int main() {
 
     // Kernel Timing
     cudaEventRecord(start);
-    noSoftmaxCrossEntropy<<<ceil(N/blockSize), blockSize>>>(d_L, d_Y, d_loss);
+    coalescedAccessCE<<<N, WARP_SIZE>>>(d_L, d_Y, d_loss);
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&ms, start, stop);
@@ -88,8 +110,8 @@ int main() {
 
     cudaMemcpy(h_loss_p, d_loss, sizeof(float), cudaMemcpyDeviceToHost);
 
-    float correct_loss = ce_loss_sequential(h_L, h_Y);
-    printf("Correct Loss: %f, Kernel Loss: %f\n", correct_loss, *h_loss_p);
+    // float correct_loss = ce_loss_sequential(h_L, h_Y);
+    // printf("Correct Loss: %f, Kernel Loss: %f\n", correct_loss, *h_loss_p);
 
     cudaFree(d_loss);
     cudaFree(d_L);

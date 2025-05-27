@@ -2,7 +2,7 @@
 #include <iostream>
 #include <math.h>
 
-#define C 32
+#define C 128
 #define N 1048576
 
 float ce_loss_sequential(float * L, int* Y){
@@ -40,7 +40,7 @@ void fill_Y(int* Y){
 }
 
 __global__
-void naiveCrossEntropy(float * L, int* Y, float * loss){
+void noSoftmaxCrossEntropy(float * L, int* Y, float * loss){
     int i = threadIdx.x;
     
     //Log of Softmax
@@ -49,9 +49,9 @@ void naiveCrossEntropy(float * L, int* Y, float * loss){
         sum_exp += expf(L[i*C + j]);
     }
     int class_ind = Y[i];
-    float log_likelyhood = logf(expf(L[i*C + class_ind])/sum_exp);
+    float negative_log_likelyhood = -L[i*C + class_ind] + log(sum_exp);
 
-    atomicAdd(loss, -log_likelyhood/N);
+    atomicAdd(loss, negative_log_likelyhood/N);
 
 }
 
@@ -69,7 +69,7 @@ int main() {
     cudaMalloc(&d_loss, sizeof(float));
     cudaMemcpy(d_loss, h_loss_p, sizeof(float), cudaMemcpyHostToDevice);
 
-    int blockSize = min(32, N);
+    int blockSize = 32;
 
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
@@ -78,7 +78,7 @@ int main() {
 
     // Kernel Timing
     cudaEventRecord(start);
-    naiveCrossEntropy<<<ceil(N/blockSize), blockSize>>>(d_L, d_Y, d_loss);
+    noSoftmaxCrossEntropy<<<ceil(N/blockSize), blockSize>>>(d_L, d_Y, d_loss);
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&ms, start, stop);
