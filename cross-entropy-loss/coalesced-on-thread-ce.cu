@@ -1,10 +1,12 @@
 #include <cuda_runtime.h>
 #include <iostream>
 #include <math.h>
+#include <cuda.h>
 
 #define C 512
 #define N 1048576
 #define BLOCK_SIZE 32
+#define WARP_SIZE 32
 
 float ce_loss_sequential(float * L, int* Y){
     float total_log_likelyhood = 0;
@@ -41,32 +43,33 @@ void fill_Y(int* Y){
 }
 
 __global__
-void avgReductionCE(float * L, int* Y, float * loss){
-    //One thread per row
+void coalescedAccessCE(float * L, int* Y, float * loss){
+    //One warp/block per row
     int i = threadIdx.x + blockIdx.x*blockDim.x;
-    __shared__ float block_loss;
-    if (threadIdx.x == 0){
-        block_loss = 0;
-    }
+    if (i < C*N){
+        float thread_sum = 0;
+        float row_logit = 0;
 
-    __syncthreads();
+        if (threadIdx.x == 0){
+            int class_ind = Y[blockIdx.x];
+            row_logit = L[blockIdx.x*C + class_ind];
+        }
+
+        for (int p = 0; threadIdx.x + p*WARP_SIZE<C; ++p){
+            //numerical instability
+            thread_sum += expf(L[i+p*WARP_SIZE]);
+        }
+
+        for (int offset = WARP_SIZE/2; offset >0; offset >>= 1) {
+            thread_sum +=  __shfl_down_sync(0xffffffff, thread_sum, offset);
+        }
+
+        if(threadIdx.x == 0){
+            float row_loss = (-row_logit + log(thread_sum))/N;
+            float cur_loss = atomicAdd(loss, row_loss);
+        }
+    }
     
-    //Log of Softmax
-    float sum_exp = 0;
-    for (int j=0; j<C; ++j){
-        sum_exp += expf(L[i*C + j]);
-    }
-    int class_ind = Y[i];
-    float negative_log_likelyhood = (-L[i*C + class_ind] + log(sum_exp))/N;
-
-    atomicAdd(&block_loss, negative_log_likelyhood);
-
-    __syncthreads();
-    if(threadIdx.x == 0){
-        atomicAdd(loss, block_loss);
-    }
-    
-
 }
 
 int main() {
@@ -90,7 +93,7 @@ int main() {
 
     // Kernel Timing
     cudaEventRecord(start);
-    avgReductionCE<<<ceil(N/BLOCK_SIZE), BLOCK_SIZE>>>(d_L, d_Y, d_loss);
+    coalescedAccessCE<<<N, WARP_SIZE>>>(d_L, d_Y, d_loss);
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&ms, start, stop);

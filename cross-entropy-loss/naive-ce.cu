@@ -1,6 +1,7 @@
 #include <cuda_runtime.h>
 #include <iostream>
 #include <math.h>
+#include <float.h>
 
 #define C 512
 #define N 1048576
@@ -41,17 +42,18 @@ void fill_Y(int* Y){
 
 __global__
 void naiveCrossEntropy(float * L, int* Y, float * loss){
-    int i = threadIdx.x;
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i >= N) return;
     
-    //Log of Softmax
     float sum_exp = 0;
     for (int j=0; j<C; ++j){
         sum_exp += expf(L[i*C + j]);
     }
-    int class_ind = Y[i];
-    float log_likelyhood = logf(expf(L[i*C + class_ind])/sum_exp);
 
-    atomicAdd(loss, -log_likelyhood/N);
+    int class_ind = Y[i];
+    float log_likelihood = logf(expf(L[i*C + class_ind])/sum_exp);
+
+    // atomicAdd(loss, -log_likelihood/N);
 }
 
 int main() {
@@ -63,10 +65,9 @@ int main() {
     int * d_Y;cudaMalloc(&d_Y, N*sizeof(int));
     cudaMemcpy(d_Y, d_Y, N*sizeof(int), cudaMemcpyHostToDevice);
 
-    float h_loss = 0; float* h_loss_p = &h_loss; 
     float* d_loss; 
     cudaMalloc(&d_loss, sizeof(float));
-    cudaMemcpy(d_loss, h_loss_p, sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemset(d_loss, 0, sizeof(float));
 
     int blockSize = min(32, N);
 
@@ -84,11 +85,12 @@ int main() {
     printf("Kernel Execution Time ms: %f \n", ms);
     // END
 
+    float zero = 0;
+    float* h_loss = &zero; 
+    cudaMemcpy(h_loss, d_loss, sizeof(float), cudaMemcpyDeviceToHost);
 
-    cudaMemcpy(h_loss_p, d_loss, sizeof(float), cudaMemcpyDeviceToHost);
-
-    // float correct_loss = ce_loss_sequential(h_L, h_Y);
-    // printf("Correct Loss: %f, Kernel Loss: %f\n", correct_loss, *h_loss_p);
+    float correct_loss = ce_loss_sequential(h_L, h_Y);
+    printf("Correct Loss: %f, Kernel Loss: %f\n", correct_loss, *h_loss);
 
     cudaFree(d_loss);
     cudaFree(d_L);

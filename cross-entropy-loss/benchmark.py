@@ -2,7 +2,7 @@ import time
 import torch
 import torch.nn.functional as F
 
-C = 32
+C = 512
 N = 1048576
 
 def benchmark():

@@ -61,9 +61,6 @@ void coalescedAccessCE(float * L, int* Y, float * loss){
             thread_sum += expf(L_row[threadIdx.x + p*WARP_SIZE]);
         }
 
-        __syncthreads();
-
-        //Make a warp reduce later
         for (int offset = 1; offset <= WARP_SIZE/2; offset *= 2) {
             thread_sum = thread_sum +  __shfl_down_sync(0xffffffff, thread_sum, offset);
         }
@@ -110,8 +107,8 @@ int main() {
 
     cudaMemcpy(h_loss_p, d_loss, sizeof(float), cudaMemcpyDeviceToHost);
 
-    // float correct_loss = ce_loss_sequential(h_L, h_Y);
-    // printf("Correct Loss: %f, Kernel Loss: %f\n", correct_loss, *h_loss_p);
+    float correct_loss = ce_loss_sequential(h_L, h_Y);
+    printf("Correct Loss: %f, Kernel Loss: %f\n", correct_loss, *h_loss_p);
 
     cudaFree(d_loss);
     cudaFree(d_L);
